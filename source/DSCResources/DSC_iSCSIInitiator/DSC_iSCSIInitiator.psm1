@@ -416,6 +416,9 @@ function Set-TargetResource
                     $($script:localizedData.iSCSITargetPortalCreatedMessage) `
                         -f $TargetPortalAddress, $InitiatorPortalAddress
                 ) -join '' )
+
+            # If the targetportal is created or needs to be recreated
+            $removeSession = $true
         }
 
         # Lookup the Target
@@ -431,105 +434,118 @@ function Set-TargetResource
                     -f $NodeAddress
             ) -join '' )
 
-        if ($target)
+        if ($target.IsConnected)
         {
-            # Lookup the Connection
-            $connection = Get-Connection `
-                -Target $target
+
+            # A target can consist of multiple sessions (each with a connection)
+
+            # Lookup the Connection/session/persistenttarget
+            $connection = Get-IscsiConnection | Where-Object InitiatorAddress -eq $InitiatorPortalAddress | Where-Object TargetAddress -eq $TargetPortalAddress
+
+            $iscsicli_session = get-iSCSICLIListSessions -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress -initiatorPortalIpAddress $InitiatorPortalAddress
 
             # Lookup the Session
-            $session = Get-Session `
-                -Target $target
-
-            if ($connection -and $session)
-            {
-                # Check that the session and connection parameters are correct
-
-                # The Connection.TargetAddress will always be an IP Address
-                # even if the TargetPortalAddress was specified as a Hostname
-                try
-                {
-                    $targetPortalIP = @(
-                        ([System.Net.IPAddress]$TargetPortalAddress).IPAddressToString
-                    )
-                }
-                catch
-                {
-                    # This is a TargetPortalAddress is a Hostname so resolve it to IP addresses
-                    $targetPortalIP = @(
-                        (Resolve-DNSName -Name $TargetPortalAddress -Type A).IPAddress
-                    )
-                } # try
-
-                if ($connection.TargetAddress -notin $targetPortalIP)
-                {
-                    $connect = $true
-                } # if
-
-                if ($connection.InitiatorAddress -ne $InitiatorPortalAddress)
-                {
-                    $connect = $true
-                } # if
-
-                if (($TargetPortalPortNumber) `
-                        -and ($connection.TargetPortNumber -ne $TargetPortalPortNumber))
-                {
-                    $connect = $true
-                } # if
-
-                if (($AuthenticationType) `
-                        -and ($session.AuthenticationType -ne $AuthenticationType))
-                {
-                    $connect = $true
-                } # if
-
-                if (($InitiatorInstanceName) `
-                        -and ($session.InitiatorInstanceName -ne $InitiatorInstanceName))
-                {
-                    $connect = $true
-                } # if
-
-                if ($PSBoundParameters.ContainsKey('InitiatorPortalAddress') `
-                        -and ($session.InitiatorPortalAddress -ne $InitiatorPortalAddress))
-                {
-                    $connect = $true
-                } # if
-
-                if (($null -ne $IsDataDigest) `
-                        -and ($session.IsDataDigest -ne $IsDataDigest))
-                {
-                    $connect = $true
-                } # if
-
-                if (($null -ne $IsHeaderDigest) `
-                        -and ($session.IsHeaderDigest -ne $IsHeaderDigest))
-                {
-                    $connect = $true
-                } # if
-
-                if ($connect)
-                {
-                    # The Target/Session/Connection has different parameters
-                    # So disconnect everything so it can be reconnected
-                    Disconnect-IscsiTarget `
-                        -NodeAddress $NodeAddress `
-                        -Confirm:$False `
-                        -ErrorAction Stop
-
-                    Write-Verbose -Message ( @(
-                            "$($MyInvocation.MyCommand): "
-                            $($script:localizedData.iSCSITargetDisconnectedMessage) `
-                                -f $NodeAddress
-                        ) -join '' )
-
-                } # if
+            if ($iscsicli_session.count -ne 0 ) {
+                $session = Get-IscsiSession -sessionidentifier $iscsicli_session."$TargetPortalAddress`_$NodeAddress".'Session Id'
             }
-            else
-            {
-                # Either the session or connection doesn't exist
-                # so reconnect or the target is not connected
-                $connect = $true
-            } # if
+            $peristentTarget = get-iSCSIPersistentTarget -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress
+                if ($connection -and $session)
+                {
+                        # Check that the session and connection parameters are correct
+
+                        # The Connection.TargetAddress will always be an IP Address
+                        # even if the TargetPortalAddress was specified as a Hostname
+                        try
+                        {
+                            $targetPortalIP = @(
+                                ([System.Net.IPAddress]$TargetPortalAddress).IPAddressToString
+                            )
+                        }
+                        catch
+                        {
+                            # This is a TargetPortalAddress is a Hostname so resolve it to IP addresses
+                            $targetPortalIP = @(
+                                (Resolve-DNSName -Name $TargetPortalAddress -Type A).IPAddress
+                            )
+                        } # try
+
+                        if ($targetPortalIP -notin $connection.TargetAddress)
+                        {
+                            $connect = $true
+                        } # if
+
+                        if ($InitiatorPortalAddress -notin $connection.InitiatorAddress)
+                        {
+                            $connect = $true
+                        } # if
+
+                        if (($TargetPortalPortNumber) `
+                                -and ($connection.TargetPortNumber -ne $TargetPortalPortNumber))
+                        {
+                            $connect = $true
+                        } # if
+
+                        if (($AuthenticationType) `
+                                -and ($session.AuthenticationType -ne $AuthenticationType))
+                        {
+                            $connect = $true
+                        } # if
+
+                        if (($InitiatorInstanceName) `
+                                -and ($session.InitiatorInstanceName -ne $InitiatorInstanceName))
+                        {
+                            $connect = $true
+                        } # if
+
+                        if ($PSBoundParameters.ContainsKey('InitiatorPortalAddress') `
+                                -and ($InitiatorPortalAddress -notin $connection.InitiatorAddress))
+                        {
+                            $connect = $true
+                        } # if
+
+                        if (($null -ne $IsDataDigest) `
+                                -and ($session.IsDataDigest -ne $IsDataDigest))
+                        {
+                            $connect = $true
+                        } # if
+
+                        if (($null -ne $IsHeaderDigest) `
+                                -and ($session.IsHeaderDigest -ne $IsHeaderDigest))
+                        {
+                            $connect = $true
+                        } # if
+
+                        if (($peristentTarget.count -eq 0) `
+                                -or ($session.IsPersistent -eq $false))
+                        {
+                            #there is a session/connection but no persistent target remove the session and mark it for reconnection
+                            $connect = $true
+                        } # if
+
+                        if ($connect)
+                        {
+
+                            # The Target/Session/Connection has different parameters
+                            # So disconnect everything so it can be reconnected
+                            Disconnect-IscsiTarget `
+                                -NodeAddress $NodeAddress `
+                                -Confirm:$False `
+                                -ErrorAction Stop
+
+                            Write-Verbose -Message ( @(
+                                    "$($MyInvocation.MyCommand): "
+                                    $($script:localizedData.iSCSITargetDisconnectedMessage) `
+                                        -f $NodeAddress
+                                ) -join '' )
+
+                        } # if
+                }
+                else
+                {
+                    # Either the session or connection doesn't exist
+                    # so reconnect or the target is not connected
+                    $connect = $true
+                } # if
         }
         else
         {
@@ -542,6 +558,25 @@ function Set-TargetResource
             $splat.Remove('IsMultipathEnabled')
             $splat.Remove('iSNSServer')
 
+            # The Target/Session needs to be connected because it does not exist yet,
+            #if a persistent target for this target-session exists, remove the persistent target first before reconnecting (with multipath enabled and ispersistent true)
+            $peristentTarget = get-iSCSIPersistentTarget -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress
+            if ($peristentTarget)
+            {
+                remove-iSCSIPersistentTarget -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress
+            }
+
+            #if the target_session was marked for recreation (there was a session but no persistent target listed and/or ispersistent flag was not matching)
+            $iscsicli_session = get-iSCSICLIListSessions -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress -initiatorPortalIpAddress $InitiatorPortalAddress
+            if ($iscsicli_session.count -ne 0 )
+            {
+                $session = Get-IscsiSession -sessionidentifier $iscsicli_session."$TargetPortalAddress`_$NodeAddress".'Session Id'
+            }
+            if ($session.count -ne 0)
+            {
+                $session | ForEach-Object{Disconnect-IscsiTarget -SessionIdentifier $_.sessionidentifier -NodeAddress $NodeAddress -Confirm:$false}
+            }
+
             $Session = Connect-IscsiTarget `
                 @splat `
                 -ErrorAction Stop
@@ -551,37 +586,9 @@ function Set-TargetResource
                     $($script:localizedData.iSCSITargetConnectedMessage) `
                         -f $NodeAddress
                 ) -join '' )
+            start-sleep 10
         } # if
 
-        if (($PSBoundParameters.ContainsKey('IsPersistent')) `
-                -and ($IsPersistent -ne $session.IsPersistent))
-        {
-            if ($IsPersistent -eq $true)
-            {
-                # Ensure session is persistent
-                $session | Register-IscsiSession `
-                    -IsMultipathEnabled $IsMultipathEnabled `
-                    -ErrorAction Stop
-
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSISessionSetPersistentMessage) `
-                            -f $NodeAddress
-                    ) -join '' )
-            }
-            else
-            {
-                # Ensure session is not persistent
-                $session | Unregister-IscsiSession `
-                    -ErrorAction Stop
-
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSISessionRemovedPersistentMessage) `
-                            -f $NodeAddress
-                    ) -join '' )
-            }
-        }
 
         # Check the iSNS Server setting
         if ($PSBoundParameters.ContainsKey('iSNSServer'))
@@ -646,16 +653,28 @@ function Set-TargetResource
         {
             if ($target.IsConnected)
             {
-                Disconnect-IscsiTarget `
-                    -NodeAddress $NodeAddress `
-                    -Confirm:$false `
-                    -ErrorAction Stop
-
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSITargetDisconnectedMessage) `
-                            -f $NodeAddress
-                    ) -join '' )
+                #lookup the session for this target and remove it
+                if ($InitiatorPortalAddress -and $TargetPortalAddress){
+                    $connection = Get-Connection -Target $target | Where-Object{$_.initiatoraddress -eq $InitiatorPortalAddress -and $_.targetaddress -eq $TargetPortalAddress}
+                }else{
+                    $connection = Get-Connection -Target $target
+                }
+                foreach($session in $connection){
+                    #remove persistent target if it exists
+                    $peristentTarget = get-iSCSIPersistentTarget -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress
+                    if($peristentTarget){
+                        remove-iSCSIPersistentTarget -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress
+                    }
+                    Get-IscsiSession -IscsiConnection $session | ForEach-Object{
+                        Unregister-IscsiSession -SessionIdentifier $_.sessionidentifier -ErrorAction SilentlyContinue
+                        Disconnect-IscsiTarget -NodeAddress $_.TargetNodeAddress -SessionIdentifier $_.sessionidentifier -Confirm:$false -ErrorAction SilentlyContinue
+                        Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSITargetDisconnectedMessage) `
+                                -f $NodeAddress
+                        ) -join '' )
+                    }
+                }
             }
         }
 
@@ -930,9 +949,16 @@ function Test-TargetResource
                 return $desiredConfigurationMatch
             } # if
 
-            # Lookup the Connection
-            $connection = Get-Connection `
-                -Target $target
+            # Lookup the Connection with the target and initiator address as a filter to allow multiple session
+            if ($InitiatorPortalAddress -and $TargetPortalAddress)
+            {
+                $connection = Get-IscsiConnection | Where-Object InitiatorAddress -eq $InitiatorPortalAddress | Where-Object TargetAddress -eq $TargetPortalAddress
+            } # if
+            else
+            {
+                $connection = Get-Connection `
+                    -Target $target
+            } # else
 
             if (-not $connection)
             {
@@ -950,133 +976,145 @@ function Test-TargetResource
                 The Connection.TargetAddress will always be an IP Address
                 even if the TargetPortalAddress was specified as a Hostname
             #>
-            try
-            {
-                $targetPortalIP = @(
-                    ([System.Net.IPAddress]$TargetPortalAddress).IPAddressToString
-                )
-            }
-            catch
-            {
-                # This is a TargetPortalAddress is a Hostname so resolve it to IP addresses
-                $targetPortalIP = @(
-                    (Resolve-DNSName -Name $TargetPortalAddress -Type A).IPAddress
-                )
-            } # try
+                try
+                {
+                    $targetPortalIP = @(
+                        ([System.Net.IPAddress]$TargetPortalAddress).IPAddressToString
+                    )
+                }
+                catch
+                {
+                    # This is a TargetPortalAddress is a Hostname so resolve it to IP addresses
+                    $targetPortalIP = @(
+                        (Resolve-DNSName -Name $TargetPortalAddress -Type A).IPAddress
+                    )
+                } # try
 
-            if ($connection.TargetAddress -notin $targetPortalIP)
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Connection', 'TargetAddress'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            }
+                if ($targetPortalIP -notin $connection.TargetAddress)
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Connection', 'TargetAddress'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                }
 
-            if ($PSBoundParameters.ContainsKey('InitiatorPortalAddress') `
-                    -and ($connection.InitiatorAddress -ne $InitiatorPortalAddress))
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Connection', 'InitiatorAddress'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            } # if
+                if ($PSBoundParameters.ContainsKey('InitiatorPortalAddress') `
+                        -and ($connection.InitiatorAddress -ne $InitiatorPortalAddress))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Connection', 'InitiatorAddress'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                } # if
 
-            if (($TargetPortalPortNumber) `
-                    -and ($connection.TargetPortNumber -ne $TargetPortalPortNumber))
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Connection', 'TargetPortNumber'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            } # if
+                if (($TargetPortalPortNumber) `
+                        -and ($TargetPortalPortNumber -notin $connection.TargetPortNumber))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Connection', 'TargetPortNumber'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                } # if
 
-            # Lookup the Session
-            $session = Get-Session `
-                -Target $target
+                # Lookup the Session
+                $iscsicli_session = get-iSCSICLIListSessions -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress -initiatorPortalIpAddress $InitiatorPortalAddress
+                if($iscsicli_session.count -ne 0 ) {$session = Get-IscsiSession -sessionidentifier $iscsicli_session."$TargetPortalAddress`_$NodeAddress".'Session Id'}
+                $peristentTarget = get-iSCSIPersistentTarget -targetPortalIpAddress $TargetPortalAddress -targetPortNumber $TargetPortalPortNumber -targetNodeAddress $NodeAddress
 
-            if (-not $session)
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSISessionDoesNotExistButShouldMessage) `
-                            -f $NodeAddress
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-                return $desiredConfigurationMatch
-            } # if
+                if ($session.count -eq 0 )
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSISessionDoesNotExistButShouldMessage) `
+                                -f $NodeAddress
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                    return $desiredConfigurationMatch
+                } # if
 
-            # Check the Session parameters are correct
-            if (($AuthenticationType) `
-                    -and ($session.AuthenticationType -ne $AuthenticationType))
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'AuthenticationType'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            } # if
+                # Check the Session parameters are correct
+                if (($AuthenticationType) `
+                        -and ($AuthenticationType -notin $session.AuthenticationType))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'AuthenticationType'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                } # if
 
-            if (($InitiatorInstanceName) `
-                    -and ($session.InitiatorInstanceName -ne $InitiatorInstanceName))
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'InitiatorInstanceName'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            } # if
+                if (($InitiatorInstanceName) `
+                        -and ($InitiatorInstanceName -notin $session.InitiatorInstanceName))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'InitiatorInstanceName'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                } # if
 
-            if ($PSBoundParameters.ContainsKey('InitiatorPortalAddress') `
-                    -and ($session.InitiatorPortalAddress -ne $InitiatorPortalAddress))
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'InitiatorAddress'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            } # if
+                if ($PSBoundParameters.ContainsKey('InitiatorPortalAddress') `
+                        -and ($InitiatorPortalAddress -notin $connection.InitiatorAddress))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'InitiatorAddress'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                } # if
 
-            if (($null -ne $IsDataDigest) `
-                    -and ($session.IsDataDigest -ne $IsDataDigest))
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'IsDataDigest'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            } # if
+                if (($null -ne $IsDataDigest) `
+                        -and ($session.IsDataDigest -ne $IsDataDigest))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'IsDataDigest'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                } # if
 
-            if (($null -ne $IsHeaderDigest) `
-                    -and ($session.IsHeaderDigest -ne $IsHeaderDigest))
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'IsHeaderDigest'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            } # if
+                if (($null -ne $IsHeaderDigest) `
+                        -and ($session.IsHeaderDigest -ne $IsHeaderDigest))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'IsHeaderDigest'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                } # if
 
-            if (($null -ne $IsPersistent) `
-                    -and ($session.IsPersistent -ne $IsPersistent))
-            {
-                Write-Verbose -Message ( @(
-                        "$($MyInvocation.MyCommand): "
-                        $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
-                            -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'IsPersistent'
-                    ) -join '' )
-                $desiredConfigurationMatch = $false
-            } # if
+                if (($null -ne $IsPersistent) `
+                        -and ($session.IsPersistent -ne $IsPersistent))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'IsPersistent'
+                        ) -join '' )
+                    $desiredConfigurationMatch = $false
+                } # if
+                if (($peristentTarget.count -eq 0) `
+                        -and ($session.count -gt 0))
+                {
+                    Write-Verbose -Message ( @(
+                            "$($MyInvocation.MyCommand): "
+                            $($script:localizedData.iSCSIInitiatorParameterNeedsUpdateMessage) `
+                                -f $NodeAddress, $TargetPortalAddress, $InitiatorPortalAddress, 'Session', 'IsPersistent'
+                        ) -join '' )
+                    #there is a session/connection but no persistent target => remove the session and mark it for reconnection
+                    $desiredConfigurationMatch = $false
+                } # if
         }
         else
         {
@@ -1110,13 +1148,27 @@ function Test-TargetResource
 
         if ($target.IsConnected)
         {
-            # The iSCSI Target exists and is connected
-            Write-Verbose -Message ( @(
-                    "$($MyInvocation.MyCommand): "
-                    $($script:localizedData.iSCSITargetExistsButShouldNotMessage) `
-                        -f $NodeAddress
-                ) -join '' )
-            $desiredConfigurationMatch = $false
+            # lookup the session for this target and remove it
+            if ($InitiatorPortalAddress -and $TargetPortalAddress)
+            {
+                $connection = Get-Connection -Target $target `
+                    | Where-Object { $_.initiatoraddress -eq $initiatorportaladdress `
+                    -and $_.targetaddress -eq $TargetPortalAddress }
+            } # if
+            else
+            {
+                $connection = Get-Connection -Target $target
+            }
+            if ($connection)
+            {
+                # The iSCSI Target exists and is connected
+                Write-Verbose -Message ( @(
+                        "$($MyInvocation.MyCommand): "
+                        $($script:localizedData.iSCSITargetExistsButShouldNotMessage) `
+                            -f $NodeAddress
+                    ) -join '' )
+                $desiredConfigurationMatch = $false
+            } # if
         } # if
 
         # The iSCSI Target Portal should not exist
